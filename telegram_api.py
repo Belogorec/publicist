@@ -1,9 +1,10 @@
 import json
+import os
 from typing import Optional
 
 import requests
 
-from config import TG_API
+from config import TG_API, BOT_TOKEN
 
 session = requests.Session()
 
@@ -80,3 +81,25 @@ def tg_edit_message_text(
         tg_post("editMessageText", payload)
     except Exception:
         pass  # message may be too old or already deleted
+
+
+def tg_download_file(file_id: str, destination_path: str) -> str:
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN не задан")
+
+    data = tg_post("getFile", {"file_id": file_id})
+    file_path = (data.get("result") or {}).get("file_path")
+    if not file_path:
+        raise RuntimeError("Telegram API не вернул file_path")
+
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+    os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+
+    with session.get(file_url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(destination_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 128):
+                if chunk:
+                    f.write(chunk)
+
+    return destination_path

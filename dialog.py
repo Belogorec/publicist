@@ -118,14 +118,15 @@ def save_lead_file(
     caption: Optional[str] = None,
     original_filename: Optional[str] = None,
     mime_type: Optional[str] = None,
+    storage_path: Optional[str] = None,
 ) -> None:
     conn.execute(
         """
         INSERT INTO lead_files (lead_id, file_type, tg_file_id, caption,
-                                original_filename, mime_type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                                original_filename, mime_type, storage_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
-        (lead_id, file_type, tg_file_id, caption, original_filename, mime_type),
+        (lead_id, file_type, tg_file_id, caption, original_filename, mime_type, storage_path),
     )
     conn.commit()
 

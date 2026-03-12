@@ -6,6 +6,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TG_WEBHOOK_SECRET = os.getenv("TG_WEBHOOK_SECRET", "").strip()
+FILE_STORAGE_ROOT = os.getenv("FILE_STORAGE_ROOT", "/data/uploads").strip()
 
 if BOT_TOKEN:
     TG_API = f"https://api.telegram.org/bot{BOT_TOKEN}"

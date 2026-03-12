@@ -1,9 +1,11 @@
 import html
+import os
 import traceback
+from datetime import datetime
 
 from flask import request, abort
 
-from config import TG_WEBHOOK_SECRET, ADMIN_IDS
+from config import TG_WEBHOOK_SECRET, ADMIN_IDS, FILE_STORAGE_ROOT
 from db import connect
 from dialog import (
     MEDIA_CATALOG, get_media, get_format,
@@ -11,12 +13,31 @@ from dialog import (
     save_lead_text, save_lead_file, get_materials_summary, log_moderation,
 )
 from telegram_api import (
-    tg_send_message, tg_answer_callback_query, tg_edit_message_text,
+    tg_send_message, tg_answer_callback_query, tg_edit_message_text, tg_download_file,
 )
 
 
 def _h(s) -> str:
     return html.escape(str(s or ""), quote=False)
+
+
+def _safe_name(name: str) -> str:
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+    clean = "".join(ch if ch in allowed else "_" for ch in (name or ""))
+    return clean[:120] or "file"
+
+
+def _build_storage_path(lead_id: int, file_type: str, suggested_name: str = "") -> str:
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    ext = ""
+    if "." in suggested_name:
+        ext = "." + suggested_name.split(".")[-1][:8]
+    elif file_type == "photo":
+        ext = ".jpg"
+    elif file_type == "document":
+        ext = ".bin"
+    fname = f"{file_type}_{ts}{ext}"
+    return os.path.join(FILE_STORAGE_ROOT, str(lead_id), _safe_name(fname))
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +240,20 @@ def handle_message(message: dict, conn) -> None:
     if status in ("awaiting_material", "needs_clarification"):
         if message.get("photo"):
             best = max(message["photo"], key=lambda p: p.get("file_size", 0))
-            save_lead_file(conn, lead["id"], "photo", best["file_id"], caption or None)
+            storage_path = None
+            try:
+                storage_path = _build_storage_path(lead["id"], "photo", "photo.jpg")
+                tg_download_file(best["file_id"], storage_path)
+            except Exception:
+                traceback.print_exc()
+            save_lead_file(
+                conn,
+                lead["id"],
+                "photo",
+                best["file_id"],
+                caption or None,
+                storage_path=storage_path,
+            )
             if status == "needs_clarification":
                 update_lead(conn, tg_id, status="awaiting_material")
             tg_send_message(
@@ -231,10 +265,19 @@ def handle_message(message: dict, conn) -> None:
 
         if message.get("document"):
             doc = message["document"]
+            storage_path = None
+            try:
+                storage_path = _build_storage_path(
+                    lead["id"], "document", doc.get("file_name") or "document.bin"
+                )
+                tg_download_file(doc["file_id"], storage_path)
+            except Exception:
+                traceback.print_exc()
             save_lead_file(conn, lead["id"], "document", doc["file_id"],
                            caption=caption or None,
                            original_filename=doc.get("file_name"),
-                           mime_type=doc.get("mime_type"))
+                           mime_type=doc.get("mime_type"),
+                           storage_path=storage_path)
             if status == "needs_clarification":
                 update_lead(conn, tg_id, status="awaiting_material")
             tg_send_message(
