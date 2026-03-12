@@ -48,3 +48,35 @@ def tg_send_message(
 
     data = tg_post("sendMessage", payload)
     return (data.get("result") or {}).get("message_id")
+
+
+def tg_answer_callback_query(callback_query_id: str, text: str = None) -> None:
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    try:
+        tg_post("answerCallbackQuery", payload)
+    except Exception:
+        pass  # best-effort, don't break the flow
+
+
+def tg_edit_message_text(
+    chat_id: str,
+    message_id: int,
+    text: str,
+    reply_markup: Optional[dict] = None,
+    parse_mode: str = "HTML",
+) -> None:
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": text,
+        "parse_mode": parse_mode,
+        "disable_web_page_preview": True,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+    try:
+        tg_post("editMessageText", payload)
+    except Exception:
+        pass  # message may be too old or already deleted
