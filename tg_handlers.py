@@ -1,12 +1,13 @@
 import html
 import os
 import traceback
+import requests
 from datetime import datetime
 from typing import Optional
 
 from flask import request, abort
 
-from config import TG_WEBHOOK_SECRET, ADMIN_IDS, FILE_STORAGE_ROOT
+from config import TG_WEBHOOK_SECRET, ADMIN_IDS, FILE_STORAGE_ROOT, BOT_TOKEN, CRM_API_URL
 from db import connect
 from dialog import (
     MEDIA_CATALOG, get_media, get_format,
@@ -242,6 +243,63 @@ def handle_start(chat_id: str, user: dict, conn) -> None:
     tg_send_message(chat_id, text, reply_markup=_kb_main_menu())
 
 
+def handle_auth(chat_id: str, user: dict, code: str) -> None:
+    """Handle /auth <code> command for CRM authentication"""
+    tg_id = user.get("id")
+    username = user.get("username", "")
+    first_name = user.get("first_name", "")
+    last_name = user.get("last_name", "")
+    
+    # Check if user is admin
+    if tg_id not in ADMIN_IDS:
+        tg_send_message(
+            chat_id,
+            "❌ У вас нет доступа к CRM. Это команда только для администраторов."
+        )
+        return
+
+    # Call CRM API to confirm the auth code
+    if not CRM_API_URL or not code:
+        tg_send_message(
+            chat_id,
+            "❌ Ошибка: CRM не настроена или код не указан."
+        )
+        return
+
+    try:
+        resp = requests.post(
+            f"{CRM_API_URL}/api/auth/confirm-code",
+            json={
+                "code": code.strip(),
+                "telegram_id": tg_id,
+                "bot_token": BOT_TOKEN,
+            },
+            timeout=8,
+        )
+        
+        if resp.ok and resp.json().get("ok"):
+            # Create user record in CRM if not exists
+            full_name = f"{first_name} {last_name}".strip()
+            tg_send_message(
+                chat_id,
+                f"✅ Код <code>{code}</code> подтвержден!\n\n"
+                f"Вы можете перейти в CRM и завершить вход.",
+            )
+        else:
+            error_msg = (resp.json().get("error") or "unknown_error")
+            tg_send_message(
+                chat_id,
+                f"❌ Ошибка: {error_msg}\n"
+                f"Проверьте, что код правильный и не истёк."
+            )
+    except Exception as e:
+        traceback.print_exc()
+        tg_send_message(
+            chat_id,
+            f"❌ Ошибка при проверке кода: {str(e)[:50]}"
+        )
+
+
 def handle_message(message: dict, conn) -> None:
     chat_id = str((message.get("chat") or {}).get("id", ""))
     user = message.get("from") or {}
@@ -258,6 +316,12 @@ def handle_message(message: dict, conn) -> None:
 
     if text == "/start":
         handle_start(chat_id, user, conn)
+        return
+
+    # Handle /auth <code> command for CRM authentication
+    if text.startswith("/auth "):
+        code = text[6:].strip()
+        handle_auth(chat_id, user, code)
         return
 
     status = lead["status"]
