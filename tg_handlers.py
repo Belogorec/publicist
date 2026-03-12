@@ -2,6 +2,7 @@ import html
 import os
 import traceback
 from datetime import datetime
+from typing import Optional
 
 from flask import request, abort
 
@@ -10,8 +11,9 @@ from db import connect
 from dialog import (
     MEDIA_CATALOG, get_media, get_format,
     upsert_lead, update_lead,
-    save_lead_text, save_lead_file, get_materials_summary, log_moderation,
+    save_lead_text, save_lead_file, get_materials_summary, log_moderation, get_lead_snapshot,
 )
+from crm_sync import send_event, crm_sync_enabled
 from telegram_api import (
     tg_send_message, tg_answer_callback_query, tg_edit_message_text, tg_download_file,
 )
@@ -178,6 +180,29 @@ def _notify_admins(lead, summary: dict) -> None:
             traceback.print_exc()
 
 
+def _sync_lead_to_crm(
+    conn,
+    lead_id: int,
+    event_name: str,
+    actor_tg_id: Optional[str] = None,
+    comment: Optional[str] = None,
+) -> None:
+    if not crm_sync_enabled():
+        return
+
+    snapshot = get_lead_snapshot(conn, lead_id)
+    if not snapshot:
+        return
+
+    meta = {}
+    if actor_tg_id:
+        meta["actor_tg_id"] = actor_tg_id
+    if comment:
+        meta["comment"] = comment
+
+    send_event(event_name, snapshot, meta)
+
+
 def _start_material_upload(chat_id: str, tg_id, conn) -> None:
     update_lead(conn, tg_id, status="awaiting_material")
     tg_send_message(
@@ -197,9 +222,10 @@ def _start_material_upload(chat_id: str, tg_id, conn) -> None:
 # ---------------------------------------------------------------------------
 
 def handle_start(chat_id: str, user: dict, conn) -> None:
-    upsert_lead(conn, user.get("id"), user.get("username"),
-                user.get("first_name"), user.get("last_name"))
+    lead = upsert_lead(conn, user.get("id"), user.get("username"),
+                       user.get("first_name"), user.get("last_name"))
     update_lead(conn, user["id"], status="new")
+    _sync_lead_to_crm(conn, lead["id"], "lead.created", actor_tg_id=str(user.get("id") or ""))
 
     first_name = _h(user.get("first_name") or "")
     greeting = f"Здравствуйте{', ' + first_name if first_name else ''}."
@@ -484,6 +510,7 @@ def handle_callback_query(callback_query: dict, conn) -> None:
             update_lead(conn, tg_id, status="under_review")
             fresh_lead = conn.execute("SELECT * FROM leads WHERE tg_id = ?", (tg_id,)).fetchone()
             _notify_admins(fresh_lead, summary)
+            _sync_lead_to_crm(conn, fresh_lead["id"], "lead.submitted_for_review", actor_tg_id=tg_id)
             tg_send_message(
                 chat_id,
                 "Спасибо, материал получен и отправлен на рассмотрение редакции.\n\n"
@@ -538,6 +565,7 @@ def handle_callback_query(callback_query: dict, conn) -> None:
         if action == "approve":
             update_lead(conn, client_chat_id, status="approved")
             log_moderation(conn, target_lead_id, "approved", tg_id)
+            _sync_lead_to_crm(conn, target_lead_id, "lead.moderation.approved", actor_tg_id=tg_id)
             tg_answer_callback_query(cq_id, "✅ Одобрено")
             if msg_id:
                 tg_edit_message_text(
@@ -555,6 +583,7 @@ def handle_callback_query(callback_query: dict, conn) -> None:
         elif action == "reject":
             update_lead(conn, client_chat_id, status="rejected")
             log_moderation(conn, target_lead_id, "rejected", tg_id)
+            _sync_lead_to_crm(conn, target_lead_id, "lead.moderation.rejected", actor_tg_id=tg_id)
             tg_answer_callback_query(cq_id, "❌ Отклонено")
             if msg_id:
                 tg_edit_message_text(
@@ -573,6 +602,12 @@ def handle_callback_query(callback_query: dict, conn) -> None:
         elif action == "clarify":
             update_lead(conn, client_chat_id, status="needs_clarification")
             log_moderation(conn, target_lead_id, "needs_clarification", tg_id)
+            _sync_lead_to_crm(
+                conn,
+                target_lead_id,
+                "lead.moderation.needs_clarification",
+                actor_tg_id=tg_id,
+            )
             tg_answer_callback_query(cq_id, "❓ Запрошено уточнение")
             if msg_id:
                 tg_edit_message_text(

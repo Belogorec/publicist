@@ -163,3 +163,43 @@ def log_moderation(
         (lead_id, action, str(admin_tg_id), comment),
     )
     conn.commit()
+
+
+def get_lead_snapshot(conn: sqlite3.Connection, lead_id: int) -> dict:
+    lead = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not lead:
+        return {}
+
+    messages = conn.execute(
+        """
+        SELECT id, message_type, text, tg_message_id, created_at
+        FROM lead_messages
+        WHERE lead_id = ?
+        ORDER BY id
+        """,
+        (lead_id,),
+    ).fetchall()
+    files = conn.execute(
+        """
+        SELECT id, file_type, tg_file_id, original_filename, mime_type, caption, storage_path, created_at
+        FROM lead_files
+        WHERE lead_id = ?
+        ORDER BY id
+        """,
+        (lead_id,),
+    ).fetchall()
+    moderation = conn.execute(
+        """
+        SELECT id, action, admin_tg_id, comment, created_at
+        FROM moderation_log
+        WHERE lead_id = ?
+        ORDER BY id
+        """,
+        (lead_id,),
+    ).fetchall()
+
+    payload = dict(lead)
+    payload["messages"] = [dict(row) for row in messages]
+    payload["files"] = [dict(row) for row in files]
+    payload["moderation"] = [dict(row) for row in moderation]
+    return payload
