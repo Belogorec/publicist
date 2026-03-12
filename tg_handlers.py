@@ -204,6 +204,15 @@ def _sync_lead_to_crm(
     send_event(event_name, snapshot, meta)
 
 
+def _crm_auth_confirm_url() -> str:
+    raw_url = (CRM_API_URL or "").strip().rstrip("/")
+    if not raw_url:
+        return ""
+    if raw_url.endswith("/api/events"):
+        return raw_url[: -len("/api/events")] + "/api/auth/confirm-code"
+    return raw_url + "/api/auth/confirm-code"
+
+
 def _start_material_upload(chat_id: str, tg_id, conn) -> None:
     update_lead(conn, tg_id, status="awaiting_material")
     tg_send_message(
@@ -246,9 +255,7 @@ def handle_start(chat_id: str, user: dict, conn) -> None:
 def handle_auth(chat_id: str, user: dict, code: str) -> None:
     """Handle /auth <code> command for CRM authentication"""
     tg_id = user.get("id")
-    username = user.get("username", "")
-    first_name = user.get("first_name", "")
-    last_name = user.get("last_name", "")
+    auth_url = _crm_auth_confirm_url()
     
     # Check if user is admin
     if tg_id not in ADMIN_IDS:
@@ -259,7 +266,7 @@ def handle_auth(chat_id: str, user: dict, code: str) -> None:
         return
 
     # Call CRM API to confirm the auth code
-    if not CRM_API_URL or not code:
+    if not auth_url or not code:
         tg_send_message(
             chat_id,
             "❌ Ошибка: CRM не настроена или код не указан."
@@ -268,7 +275,7 @@ def handle_auth(chat_id: str, user: dict, code: str) -> None:
 
     try:
         resp = requests.post(
-            f"{CRM_API_URL}/api/auth/confirm-code",
+            auth_url,
             json={
                 "code": code.strip(),
                 "telegram_id": tg_id,
@@ -276,17 +283,21 @@ def handle_auth(chat_id: str, user: dict, code: str) -> None:
             },
             timeout=8,
         )
-        
-        if resp.ok and resp.json().get("ok"):
-            # Create user record in CRM if not exists
-            full_name = f"{first_name} {last_name}".strip()
+
+        payload = {}
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+
+        if resp.ok and payload.get("ok"):
             tg_send_message(
                 chat_id,
                 f"✅ Код <code>{code}</code> подтвержден!\n\n"
                 f"Вы можете перейти в CRM и завершить вход.",
             )
         else:
-            error_msg = (resp.json().get("error") or "unknown_error")
+            error_msg = payload.get("error") or f"crm_http_{resp.status_code}"
             tg_send_message(
                 chat_id,
                 f"❌ Ошибка: {error_msg}\n"
@@ -315,6 +326,14 @@ def handle_message(message: dict, conn) -> None:
                        user.get("first_name"), user.get("last_name"))
 
     if text == "/start":
+        handle_start(chat_id, user, conn)
+        return
+
+    if text.startswith("/start "):
+        payload = text[7:].strip()
+        if payload.startswith("auth_"):
+            handle_auth(chat_id, user, payload[5:])
+            return
         handle_start(chat_id, user, conn)
         return
 
